@@ -47,4 +47,9 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function assets()
+    {
+        return $this->hasMany(Asset::class, 'user_id', 'id');
+    }
 }
