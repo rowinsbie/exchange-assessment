@@ -27,21 +27,27 @@ class DatabaseSeeder extends Seeder
                 'name' => 'Test User 1',
                 'email' => 'test2@seikirowinsbie.com',
                 'password' => bcrypt('pass123'),
-                'balance' => 0, 
+                'balance' => 50000, 
             ]
         ];
 
         foreach($users as $user) {
-            $user = User::create($user);
+            $user = User::firstOrCreate(['email' => $user['email']], $user);
 
-            Asset::create([
+            Asset::firstOrCreate([
+                'user_id' => $user->id,
+                'symbol' => 'BTC',
+            ],[
                 'user_id' => $user->id,
                 'symbol' => 'BTC',
                 'amount' => 100000,
                 'locked_amount' => 0,
             ]);
 
-            Asset::create([
+            Asset::firstOrCreate([
+                'user_id' => $user->id,
+                'symbol' => 'ETH',
+            ],[
                 'user_id' => $user->id,
                 'symbol' => 'ETH',
                 'amount' => 10,

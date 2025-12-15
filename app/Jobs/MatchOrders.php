@@ -4,19 +4,20 @@ namespace App\Jobs;
 
 use App\Models\Order;
 use App\Models\Asset;
+use App\Events\OrderMatched;
+use App\Events\OrderBookUpdated;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
-use Pusher\Pusher;
 
 class MatchOrders implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $order;
+    public Order $order;
 
     public function __construct(Order $order)
     {
@@ -25,82 +26,83 @@ class MatchOrders implements ShouldQueue
 
     public function handle(): void
     {
-        $order = Order::where('id', $this->order->id)
-                      ->where('status', 1) 
-                      ->first();
+        DB::transaction(function () {
 
-        if (!$order) {
-            return; 
-        }
-
-        DB::transaction(function () use ($order) {
-
-            $match = Order::where('symbol', $order->symbol)
-                ->where('side', $order->side === 'buy' ? 'sell' : 'buy')
-                ->where('status', 1)
-                ->when($order->side === 'buy', fn($q) => $q->where('price', '<=', $order->price))
-                ->when($order->side === 'sell', fn($q) => $q->where('price', '>=', $order->price))
-                ->orderBy('id')
+            $order = Order::where('id', $this->order->id)
+                ->where('status', 1) 
+                ->lockForUpdate()
                 ->first();
 
-            if (!$match) {
-                return; 
+            if (!$order) return;
+
+            $orderAmount = (float) $order->amount;
+            $orderPrice  = (float) $order->price;
+
+            if ($order->side === 'buy') {
+                $match = Order::where('symbol', $order->symbol)
+                    ->where('side', 'sell')
+                    ->where('status', 1)
+                    ->where('amount', $orderAmount)
+                    ->where('price', '<=', $orderPrice)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
+            } else {
+                $match = Order::where('symbol', $order->symbol)
+                    ->where('side', 'buy')
+                    ->where('status', 1)
+                    ->where('amount', $orderAmount)
+                    ->where('price', '>=', $orderPrice)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->first();
             }
+
+            if (!$match) return;
+
+            $amount = $orderAmount;
+            $price  = (float) $match->price;
+            $usdVolume = $price * $amount;
+            $commission = $usdVolume * 0.015;
 
             $buyer  = $order->side === 'buy' ? $order->user : $match->user;
             $seller = $order->side === 'sell' ? $order->user : $match->user;
 
-            $price = $match->price;
-            $amount = min($order->amount, $match->amount); 
-            $usdVolume = $price * $amount;
-            $commission = $usdVolume * 0.015; 
-
-            $buyer->balance -= $usdVolume + $commission;
+            $buyer->balance -= $commission;
             $buyer->save();
 
-            $sellerAsset = Asset::firstOrCreate([
-                'user_id' => $seller->id,
-                'symbol' => $order->symbol
-            ]);
-            $sellerAsset->locked_amount -= $amount;
+            $sellerAsset = Asset::where('user_id', $seller->id)
+                ->where('symbol', $order->symbol)
+                ->lockForUpdate()
+                ->first();
+            $sellerAsset->locked_amount = 0;
             $sellerAsset->save();
 
-            $buyerAsset = Asset::firstOrCreate([
-                'user_id' => $buyer->id,
-                'symbol' => $order->symbol
-            ]);
+            $buyerAsset = Asset::firstOrCreate(
+                ['user_id' => $buyer->id, 'symbol' => $order->symbol],
+                ['amount' => 0, 'locked_amount' => 0]
+            );
             $buyerAsset->amount += $amount;
             $buyerAsset->save();
 
             $order->status = 2;
-            $order->save();
-
             $match->status = 2;
+            $order->save();
             $match->save();
 
-            $pusher = new Pusher(
-                env('PUSHER_APP_KEY'),
-                env('PUSHER_APP_SECRET'),
-                env('PUSHER_APP_ID'),
-                [
-                    'cluster' => env('PUSHER_APP_CLUSTER'),
-                    'useTLS' => true
-                ]
-            );
+            event(new OrderMatched($order, [
+                'usd_balance' => $buyer->balance,
+                'assets' => $buyer->assets()->get(),
+            ]));
 
-            $data = [
-                'order_id' => $order->id,
-                'matched_order_id' => $match->id,
-                'symbol' => $order->symbol,
-                'price' => $price,
-                'amount' => $amount,
-                'buyer_id' => $buyer->id,
-                'seller_id' => $seller->id,
-                'commission' => $commission
-            ];
+            event(new OrderMatched($match, [
+                'usd_balance' => $seller->balance,
+                'assets' => $seller->assets()->get(),
+            ]));
 
-            $pusher->trigger('private-user.' . $buyer->id, 'OrderMatched', $data);
-            $pusher->trigger('private-user.' . $seller->id, 'OrderMatched', $data);
+            // Update order book
+            event(new OrderBookUpdated($order->symbol, 'removed', ['id' => $order->id]));
+            event(new OrderBookUpdated($match->symbol, 'removed', ['id' => $match->id]));
         });
     }
 }

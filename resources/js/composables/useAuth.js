@@ -6,7 +6,6 @@ export const loading = ref(false);
 export const error = ref(null);     
 
 export function useAuth() {
-    // Restore token from localStorage on load
     const token = localStorage.getItem('token');
     if (token) {
         api.defaults.headers.common['Authorization'] = `Bearer ${token}`;

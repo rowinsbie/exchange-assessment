@@ -15,6 +15,7 @@ class ProfileController extends Controller
         $assets = $user->assets()->get(['symbol','amount','locked_amount']);
         
         return response()->json([
+            'id' => $user->id,
             'usd_balance' => $user->balance,
             'assets' => $assets
         ]);

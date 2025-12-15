@@ -8,5 +8,13 @@ export const echo = new Echo({
     key: import.meta.env.VITE_PUSHER_APP_KEY,
     cluster: import.meta.env.VITE_PUSHER_APP_CLUSTER,
     forceTLS: true,
-    encrypted: true,
+    authEndpoint:  `/broadcasting/auth`, 
+    auth: {
+        headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+            Accept: 'application/json',
+        },
+    },
 });
+
+window.echo = echo;

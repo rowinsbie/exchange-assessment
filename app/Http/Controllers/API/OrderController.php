@@ -8,10 +8,19 @@ use App\Models\Asset;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use App\Jobs\MatchOrders;
+use App\Repositories\OrderRepository;
 
 class OrderController extends Controller
 {
+
+    private $orderRepository;
+
+    public function __construct(OrderRepository $orderRepository)
+    {
+        $this->orderRepository = $orderRepository;
+    }
+
+
     public function index(Request $request)
     {
         $symbol = $request->query('symbol');
@@ -24,10 +33,7 @@ class OrderController extends Controller
             ], 400);
         }
 
-        $orders = Order::where('symbol', $symbol)
-                        ->where('status', 1)
-                        ->orderBy('id', 'asc')
-                        ->get();
+        $orders = $this->orderRepository->getOrders($symbol);
 
         return response()->json([
             'success' => true,
@@ -38,56 +44,54 @@ class OrderController extends Controller
 
     public function store(Request $request)
     {
-        $request->validate([
-            'symbol' => 'required|string',
-            'side' => 'required|in:buy,sell',
-            'price' => 'required|numeric|min:0.0001',
-            'amount' => 'required|numeric|min:0.0001'
-        ]);
-
+        $data = $this->orderRepository->validateRequest($request);
         $user = Auth::user();
-        $symbol = $request->symbol;
-        $price = $request->price;
-        $amount = $request->amount;
-        $side = $request->side;
 
         try {
-            DB::transaction(function() use ($user, $symbol, $price, $amount, $side) {
-                if($side === 'buy') {
-                    $total = $price * $amount;
-                    if($user->balance < $total) {
-                        abort(400, 'Insufficient USD balance');
-                    }
-                    $user->balance -= $total;
-                    $user->save();
-                } else {
-                    $asset = Asset::firstOrCreate([
-                        'user_id' => $user->id,
-                        'symbol' => $symbol
-                    ]);
-                    if($asset->amount < $amount) {
-                        abort(400, 'Insufficient asset balance');
-                    }
-                    $asset->amount -= $amount;
-                    $asset->locked_amount += $amount;
-                    $asset->save();
-                }
-
-                $order = Order::create([
-                    'user_id' => $user->id,
-                    'symbol' => $symbol,
-                    'side' => $side,
-                    'price' => $price,
-                    'amount' => $amount,
-                    'status' => 1
-                ]);
-
-                MatchOrders::dispatch($order);
+            DB::transaction(function() use ($user, $data) {
+                $this->orderRepository->processUserBalance($user, $data);
+                $order = $this->orderRepository->createOrder($user, $data);
+                $this->orderRepository->dispatchEvents($order);
             });
 
             return response()->json([
                 'success' => true,
-                'message' => 'Order placed successfully.',
+                'message' => "Order placed successfully",
+                'data'    => null,
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+                'data'    => null,
+            ], 400);
+        }
+    }
+
+
+    public function cancel($id)
+    {
+        $user = Auth::user();
+
+        try {
+            DB::transaction(function () use ($id, $user) {
+                $order = Order::where('id', $id)
+                    ->where('user_id', $user->id)
+                    ->where('status', 1)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$order) {
+                    throw new \Exception('Open order not found');
+                }
+
+                $this->orderRepository->cancelOrder($order, $user);
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order cancelled successfully.',
                 'data' => null
             ]);
 
@@ -96,42 +100,7 @@ class OrderController extends Controller
                 'success' => false,
                 'message' => $e->getMessage(),
                 'data' => null
-            ], 400);
-        }
-    }
-
-    public function cancel($id)
-    {
-        $user = Auth::user();
-        $order = Order::where('id', $id)->where('user_id', $user->id)->where('status', 1)->first();
-
-        if (!$order) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Open order not found.',
-                'data' => null
             ], 404);
         }
-
-        DB::transaction(function() use ($order, $user) {
-            if($order->side === 'buy') {
-                $user->balance += $order->price * $order->amount;
-                $user->save();
-            } else {
-                $asset = Asset::where('user_id', $user->id)->where('symbol', $order->symbol)->first();
-                $asset->amount += $order->amount;
-                $asset->locked_amount -= $order->amount;
-                $asset->save();
-            }
-
-            $order->status = 3; 
-            $order->save();
-        });
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Order cancelled successfully.',
-            'data' => null
-        ]);
     }
 }

@@ -9,7 +9,7 @@
           id="email"
           v-model="email"
           type="email"
-          placeholder="you@example.com"
+          placeholder="Enter your email"
           class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
         />
       </div>
@@ -32,7 +32,6 @@
         Login
       </button>
 
-      <!-- Error Message -->
       <p v-if="error" class="mt-3 text-center text-red-500 text-sm">{{ error }}</p>
     </div>
   </div>
