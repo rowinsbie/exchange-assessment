@@ -29,8 +29,8 @@ copy the .env.example contents and paste to .env
 ```bash
 docker compose up --build
 docker compose exec app sh
-docker compose exec app composer install
-docker compose exec app php artisan key:generate
+composer install
+php artisan key:generate
 ```
 4. **Access to browser **
 ```bash
